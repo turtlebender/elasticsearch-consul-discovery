@@ -46,10 +46,13 @@ package consul.service;
 
 import com.google.gson.Gson;
 import consul.model.DiscoveryResult;
+import org.elasticsearch.SpecialPermission;
 import consul.model.health.HealthCheck;
 import utils.Utility;
 
 import java.io.IOException;
+import java.security.AccessController;
+import java.security.PrivilegedAction;
 import java.util.Arrays;
 import java.util.HashSet;
 import java.util.Set;
@@ -63,9 +66,10 @@ import java.util.Optional;
 
 public final class ConsulService {
 	private static final String CONSUL_HEALTH_CHECK_API_ENDPOINT_TEMPLATE =
-			"http://localhost:%d/v1/health/service/%s?%s";
+			"http://%s:%d/v1/health/service/%s?%s";
 
 	private final int consulAgentLocalWebServicePort;
+	private final String consulAgentWebServiceHost;
 	private final String tag;
 
 	/**
@@ -73,9 +77,23 @@ public final class ConsulService {
 	 *                   it is 8500
 	 * @param tag        if not null it will filter query on the tags
 	 */
-	public ConsulService(final int consulPort, final String tag) {
+	public ConsulService(final String consulHost, final int consulPort, final String tag) {
+		this.consulAgentWebServiceHost = consulHost;
 		this.consulAgentLocalWebServicePort = consulPort;
 		this.tag = tag;
+	}
+
+	class ReflectAction implements PrivilegedAction<HealthCheck[]>{
+		private final String apiResponse;
+
+		public ReflectAction(String apiResponse){
+			this.apiResponse = apiResponse;
+		}
+
+		@Override
+		public HealthCheck[] run() {
+			return new Gson().fromJson(this.apiResponse, HealthCheck[].class);
+		}
 	}
 
 	/**
@@ -100,8 +118,12 @@ public final class ConsulService {
 		for (String serviceName : serviceNames) {
 			String consulServiceHealthEndPoint = getConsulHealthCheckApiUrl(serviceName);
 			final String apiResponse = Utility.readUrl(consulServiceHealthEndPoint);
-			HealthCheck[] healthChecks = new Gson().fromJson(apiResponse, HealthCheck[].class);
-
+			System.out.println("apiResponse = " + apiResponse);
+			SecurityManager sm = System.getSecurityManager();
+			if (sm != null) {
+				sm.checkPermission(new SpecialPermission());
+			}
+			HealthCheck[] healthChecks = AccessController.doPrivileged(new ReflectAction(apiResponse));
 			Arrays.stream(healthChecks).forEach(healthCheck -> {
                                 String ip = healthCheck.getService().getAddress();
                                 int port = healthCheck.getService().getPort();
@@ -122,7 +144,7 @@ public final class ConsulService {
 			queryParam.append(tag.trim());
 		}
 		return String.format(CONSUL_HEALTH_CHECK_API_ENDPOINT_TEMPLATE,
-				consulAgentLocalWebServicePort, serviceName,
+				consulAgentWebServiceHost, consulAgentLocalWebServicePort, serviceName,
 				queryParam.toString());
 	}
 }
